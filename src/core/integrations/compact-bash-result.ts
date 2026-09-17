@@ -83,25 +83,115 @@ export function getOutputAwareInspectionSkipReason(
   return inspectionSkipReason;
 }
 
+const SIMPLE_COMMAND_WRAPPERS = new Set(["nohup", "builtin", "exec", "noglob", "nocorrect"]);
+
+function getWrappedCommandArgv(argv: string[]): string[] | null {
+  const wrapper = getCommandName(argv);
+  if (wrapper && SIMPLE_COMMAND_WRAPPERS.has(wrapper)) {
+    return argv.slice(1);
+  }
+  if (wrapper === "uv" && argv[1] === "run") {
+    return argv.slice(2);
+  }
+  if (wrapper === "command") {
+    let commandIndex = 1;
+    while (commandIndex < argv.length) {
+      const arg = argv[commandIndex];
+      if (arg === "-v" || arg === "-V") {
+        return null;
+      }
+      if (arg === "-p") {
+        commandIndex += 1;
+        continue;
+      }
+      if (arg === "--") {
+        commandIndex += 1;
+      }
+      break;
+    }
+    return argv.slice(commandIndex);
+  }
+
+  let index = 1;
+  if (wrapper === "timeout") {
+    while (index < argv.length) {
+      const arg = argv[index] ?? "";
+      if (["-s", "-k", "--signal", "--kill-after"].includes(arg)) {
+        index += 2;
+      } else if (
+        ["--preserve-status", "--foreground", "-v", "--verbose"].includes(arg)
+        || (arg.length > 2 && (arg.startsWith("-s") || arg.startsWith("-k")))
+        || arg.startsWith("--signal=")
+        || arg.startsWith("--kill-after=")
+      ) {
+        index += 1;
+      } else if (arg === "--") {
+        return index + 1 < argv.length ? argv.slice(index + 2) : null;
+      } else {
+        return argv.slice(index + 1);
+      }
+    }
+    return null;
+  }
+
+  if (wrapper === "nice" || wrapper === "time") {
+    const valueOptions = wrapper === "nice"
+      ? ["-n", "--adjustment"]
+      : ["-f", "-o", "--format", "--output"];
+    const flagOptions = wrapper === "nice"
+      ? []
+      : ["-p", "-a", "-v", "--append", "--verbose", "--portability", "--quiet"];
+    while (index < argv.length) {
+      const arg = argv[index] ?? "";
+      if (valueOptions.includes(arg)) {
+        index += 2;
+      } else if (
+        flagOptions.includes(arg)
+        || wrapper === "nice" && (/^-\d+$/u.test(arg) || arg.startsWith("-n") && arg.length > 2 || arg.startsWith("--adjustment="))
+        || wrapper === "time" && ((arg.startsWith("-f") || arg.startsWith("-o")) && arg.length > 2 || arg.startsWith("--format=") || arg.startsWith("--output="))
+      ) {
+        index += 1;
+      } else if (arg === "--") {
+        return argv.slice(index + 1);
+      } else {
+        return argv.slice(index);
+      }
+    }
+  }
+
+  return null;
+}
+
 export function shouldSkipCommand(command: string, skipCommandNames?: readonly string[]): boolean {
   if (!skipCommandNames?.length) {
     return false;
   }
 
   let candidate = command;
-  for (let iteration = 0; iteration < 8; iteration += 1) {
-    candidate = stripLeadingCdPrefix(candidate);
-    const effectiveArgv = getEffectiveCommandArgv({ command: candidate });
-    const argv = effectiveArgv.length > 0
-      ? effectiveArgv
-      : stripLeadingEnvAssignments(tokenizeCommand(candidate));
-    const shellBody = unwrapShellRunner({ argv, command: candidate });
+  let argv: string[] = [];
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    if (candidate) {
+      candidate = stripLeadingCdPrefix(candidate);
+      const effectiveArgv = getEffectiveCommandArgv({ command: candidate });
+      argv = effectiveArgv.length > 0
+        ? effectiveArgv
+        : stripLeadingEnvAssignments(tokenizeCommand(candidate));
+      candidate = "";
+    }
+    const shellBody = unwrapShellRunner({ argv });
     if (shellBody) {
       candidate = shellBody;
       continue;
     }
     const commandName = getCommandName(argv);
-    return Boolean(commandName && skipCommandNames.includes(commandName));
+    if (commandName && skipCommandNames.includes(commandName)) {
+      return true;
+    }
+    const wrappedArgv = getWrappedCommandArgv(argv);
+    if (!wrappedArgv?.length) {
+      return false;
+    }
+    argv = wrappedArgv;
   }
 
   return false;

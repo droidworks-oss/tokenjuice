@@ -67,6 +67,14 @@ describe("compactBashResult", () => {
     "bash -lc 'rtk git status'",
     "env DEBUG=1 bash -lc 'rtk git status'",
     "cd /repo && bash -lc 'rtk git status'",
+    "timeout 30 rtk git status",
+    "timeout -- 30 rtk git status",
+    "nice -n 10 rtk rg foo",
+    "time -p rtk git status",
+    "nohup rtk git status",
+    "command rtk git status",
+    "command -p -- rtk git status",
+    "command rtk -v",
   ])("keeps configured commands raw: %s", async (command) => {
     const outcome = await compactBashResult({
       source: "pi",
@@ -84,10 +92,17 @@ describe("compactBashResult", () => {
     });
   });
 
-  it("does not prefix-match configured command names", async () => {
+  it.each([
+    "rtk-helper git status",
+    "echo rtk",
+    "timeout 30 cat rtk",
+    "nice -n 10 grep x rtk",
+    "command -v rtk",
+    "command -V rtk",
+  ])("does not match non-command arguments: %s", async (command) => {
     const outcome = await compactBashResult({
       source: "pi",
-      command: "rtk-helper git status",
+      command,
       visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
       skipCommandNames: ["rtk"],
       genericFallbackMinSavedChars: 120,
