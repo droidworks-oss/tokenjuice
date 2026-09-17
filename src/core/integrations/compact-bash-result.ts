@@ -1,3 +1,11 @@
+import {
+  getCommandName,
+  getEffectiveCommandArgv,
+  stripLeadingCdPrefix,
+  stripLeadingEnvAssignments,
+  tokenizeCommand,
+  unwrapShellRunner,
+} from "../command.js";
 import { getInspectionCommandSkipReason, getSafeRepositoryInventorySourceArgv } from "../inventory-safety.js";
 import { readNoOmissionFromEnv } from "../env.js";
 import { shouldRecordStats } from "../artifacts.js";
@@ -24,11 +32,13 @@ export type CompactBashResultInput = {
   inspectionPolicy?: InspectionCommandPolicy;
   /** @deprecated use inspectionPolicy instead. */
   skipInspectionCommands?: boolean;
+  skipCommandNames?: readonly string[];
 } & RewritePolicyOptions;
 
 export type CompactBashResultKeepReason =
   | "empty-output"
   | InspectionCommandSkipReason
+  | "configured-command"
   | "unsupported"
   | "no-compaction"
   | "low-savings-compaction"
@@ -73,6 +83,30 @@ export function getOutputAwareInspectionSkipReason(
   return inspectionSkipReason;
 }
 
+export function shouldSkipCommand(command: string, skipCommandNames?: readonly string[]): boolean {
+  if (!skipCommandNames?.length) {
+    return false;
+  }
+
+  let candidate = command;
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    candidate = stripLeadingCdPrefix(candidate);
+    const effectiveArgv = getEffectiveCommandArgv({ command: candidate });
+    const argv = effectiveArgv.length > 0
+      ? effectiveArgv
+      : stripLeadingEnvAssignments(tokenizeCommand(candidate));
+    const shellBody = unwrapShellRunner({ argv, command: candidate });
+    if (shellBody) {
+      candidate = shellBody;
+      continue;
+    }
+    const commandName = getCommandName(argv);
+    return Boolean(commandName && skipCommandNames.includes(commandName));
+  }
+
+  return false;
+}
+
 export async function compactBashResult(input: CompactBashResultInput): Promise<CompactBashResultOutput> {
   const command = input.command.trim();
   if (!command) {
@@ -105,6 +139,15 @@ export async function compactBashResult(input: CompactBashResultInput): Promise<
     ...(typeof input.exitCode === "number" ? { exitCode: input.exitCode } : {}),
     ...(input.metadata ? { metadata: input.metadata } : {}),
   };
+
+  if (shouldSkipCommand(command, input.skipCommandNames)) {
+    return {
+      action: "keep",
+      reason: "configured-command",
+      rawText,
+      usedTrustedFullText,
+    };
+  }
 
   const inspectionSkipReason = getOutputAwareInspectionSkipReason(resolveInspectionPolicy(input), executionInput);
   if (inspectionSkipReason) {

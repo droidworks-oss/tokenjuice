@@ -59,6 +59,45 @@ describe("compactBashResult", () => {
     expect(rewritten.result.inlineText).not.toContain("truncated output");
   });
 
+  it.each([
+    "rtk git status",
+    "/usr/local/bin/rtk git status",
+    "cd /repo && env DEBUG=1 rtk git status",
+    "rtk git status | tee output.txt",
+    "bash -lc 'rtk git status'",
+    "env DEBUG=1 bash -lc 'rtk git status'",
+    "cd /repo && bash -lc 'rtk git status'",
+  ])("keeps configured commands raw: %s", async (command) => {
+    const outcome = await compactBashResult({
+      source: "pi",
+      command,
+      visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+      skipCommandNames: ["rtk"],
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    expect(outcome).toMatchObject({
+      action: "keep",
+      reason: "configured-command",
+    });
+  });
+
+  it("does not prefix-match configured command names", async () => {
+    const outcome = await compactBashResult({
+      source: "pi",
+      command: "rtk-helper git status",
+      visibleText: Array.from({ length: 40 }, (_, index) => `line ${index + 1} ${"x".repeat(80)}`).join("\n"),
+      skipCommandNames: ["rtk"],
+      genericFallbackMinSavedChars: 120,
+      genericFallbackMaxRatio: 0.75,
+      skipGenericFallbackForCompoundCommands: true,
+    });
+
+    expect(outcome).not.toMatchObject({ reason: "configured-command" });
+  });
+
   it("skips repository inspection commands before compaction when requested", async () => {
     const outcome = await compactBashResult({
       source: "pi",
